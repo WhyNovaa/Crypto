@@ -1,19 +1,21 @@
+#ifndef RCA_H
+#define RCA_H
+
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/rsa.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
-
 #include <iostream>
 
-void errors() {
+inline void _handle_errors() {
 	ERR_print_errors_fp(stderr);
 	abort();
 }
 
-bool is_exist(const char* filename) {
-	FILE* file = fopen(filename, "rb");
-	if (file) {
+inline bool _is_file_exist(const char* filename) {
+	FILE* file = nullptr;
+	if (fopen_s(&file, filename, "rb") == 0) {
 		fclose(file);
 		return true;
 	}
@@ -22,50 +24,79 @@ bool is_exist(const char* filename) {
 
 class RCA {
 private: 
-
 	EVP_PKEY* pkey;
 	X509* cert;
 	const char* pr_key_filename = "private_key.pem";
 	const char* pub_key_filename = "public_key.pem";
+	const char* cert_filename = "certificate.pem";
 
-	RCA() {
-		if (!is_exist(pr_key_filename) || !is_exist(pub_key_filename)) {
-			generate_evp_pkey(2048);
-		}
-		else {
-			FILE* pr_key_file = fopen(pr_key_filename, "rb");
-			pkey = PEM_read_PrivateKey(pr_key_file, NULL, NULL, NULL);
-		}
-	}
-
-	void  generate_evp_pkey(unsigned int bits) {
-		pkey = EVP_RSA_gen(bits);
-		if (!pkey) {
-			errors();
-		}
-	
-		save_evp_pkey(pkey);
-	}
+	long counter = 1;
 
 	void save_evp_pkey(EVP_PKEY* _pkey) {
-		FILE* pr_key_file = fopen(pr_key_filename, "wb");
-		if (!pr_key_file || !PEM_write_PrivateKey(pr_key_file, _pkey, NULL, NULL, 0, NULL, NULL)) {
-			errors();
+		FILE* pr_key_file = nullptr;
+		if (fopen_s(&pr_key_file, pr_key_filename, "wb") != 0 || !PEM_write_PrivateKey(pr_key_file, _pkey, NULL, NULL, 0, NULL, NULL)) {
+			std::cerr << "RCA: save_evp_pkey error\n";
+			_handle_errors();
 		}
 
-		FILE* pub_key_file = fopen(pub_key_filename, "wb");
-		if (!pub_key_file || !PEM_write_PUBKEY(pub_key_file, _pkey)) {
-			errors();
+		FILE* pub_key_file = nullptr;
+		if (fopen_s(&pub_key_file, pub_key_filename, "wb") != 0 || !PEM_write_PUBKEY(pub_key_file, _pkey)) {
+			std::cerr << "RCA: save_evp_pkey error\n";
+			_handle_errors();
 		}
-
+		std::cout << "RCA: evp_pkey saved\n";
 		if (pr_key_file) fclose(pr_key_file);
 		if (pub_key_file) fclose(pub_key_file);
+	}
+
+	void save_cert(X509* x509) {
+		FILE* file = nullptr;
+		if (x509 == NULL) {
+			std::cout << "RCA: certificate is null";
+			return;
+		}
+		if (fopen_s(&file, cert_filename, "wb") != 0 || !PEM_write_X509(file, x509)) {
+			std::cerr << "RCA: save_cert error\n";
+			_handle_errors();
+		}
+		std::cout << "RCA: certificate saved\n";
+		if (file) fclose(file);
+	}
+public:
+
+	RCA() {
+		if (!_is_file_exist(pr_key_filename) || !_is_file_exist(pub_key_filename) || !_is_file_exist(cert_filename)) {
+			generate_evp_pkey(2048);
+			generate_self_signed_cert();
+		}
+		else {
+			FILE* pr_key_file = nullptr;
+			fopen_s(&pr_key_file, pr_key_filename, "rb");
+			pkey = PEM_read_PrivateKey(pr_key_file, NULL, NULL, NULL);
+
+			FILE* cert_file = nullptr;
+			fopen_s(&cert_file, cert_filename, "rb");
+			cert = PEM_read_X509(cert_file, NULL, NULL, NULL);
+
+			if(cert_file) fclose(cert_file);
+			if(pr_key_file) fclose(pr_key_file);
+		}
+	}
+
+	void generate_evp_pkey(unsigned int bits) {
+		pkey = EVP_RSA_gen(bits);
+		if (!pkey) {
+			std::cerr << "RCA: ERV_RSA_gen error\n";
+			_handle_errors();
+		}
+		std::cout << "RCA: evp_pkey was made\n";
+		save_evp_pkey(pkey);
 	}
 
 	void generate_self_signed_cert() {
 		cert = X509_new();
 
-		ASN1_INTEGER_set(X509_get_serialNumber(cert), 1);
+		ASN1_INTEGER_set(X509_get_serialNumber(cert), 1L);
 
 		X509_gmtime_adj(X509_get_notBefore(cert), 0);
 		X509_gmtime_adj(X509_get_notAfter(cert), 60 * 60 * 24 * 365);
@@ -79,12 +110,66 @@ private:
 		X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char*) "Root", -1, -1, 0);
 
 		X509_set_issuer_name(cert, name);
+		X509_sign(cert, pkey, EVP_sha256());
+		std::cout << "RCA: cert was made\n";
+		save_cert(cert);
 	}
 
-public:
+	X509* sign_cert_req(X509_REQ* cert_req) {
+		if (cert_req == nullptr) {
+			std::cerr << "RCA: x509_req is null";
+			return nullptr;
+		}
+
+		X509* signed_cert = X509_new();
+		if (!signed_cert) {
+			std::cerr << "RCA: sign_cert_req error(X509 wasn't created)";
+			return nullptr;
+		}
+		
+		ASN1_INTEGER_set(X509_get_serialNumber(signed_cert), counter++);
+
+		X509_gmtime_adj(X509_get_notBefore(signed_cert), 0);
+		X509_gmtime_adj(X509_get_notAfter(signed_cert), 60 * 60 * 24 * 365);
+
+		EVP_PKEY* req_pkey = X509_REQ_get_pubkey(cert_req);
+		if (req_pkey == nullptr) {
+			std::cerr << "RCA: Error: Unable to get public key from certificate request." << std::endl;
+			X509_free(signed_cert);
+			return nullptr;
+		}
+		X509_set_pubkey(signed_cert, req_pkey);
+		EVP_PKEY_free(req_pkey);
+
+
+		X509_NAME* name = X509_REQ_get_subject_name(cert_req);
+
+		X509_set_subject_name(signed_cert, name);
+		X509_set_issuer_name(signed_cert, X509_get_subject_name(cert));
+
+		if (!X509_sign(signed_cert, pkey, EVP_sha256())) {
+			std::cerr << "RCA: Error: Failed to sign the certificate." << std::endl;
+			X509_free(signed_cert);
+			return nullptr;
+		}
+
+		std::cout << "RCA: cert signed successfully\n";
+		X509_NAME_free(name);
+		return signed_cert;
+	}
+
+	X509* get_RCA_cert() {
+		return cert;
+	}
+
+	EVP_PKEY* get_EVP_PKEY() {
+		return pkey;
+	}
 	~RCA() {
-		delete pkey;
-		delete pr_key_filename;
-		delete pub_key_filename;
+		EVP_PKEY_free(pkey);
+		X509_free(cert);
 	}
 };
+
+
+#endif
