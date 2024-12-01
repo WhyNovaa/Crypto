@@ -22,6 +22,21 @@ inline bool _is_file_exist(const char* filename) {
 	return false;
 }
 
+inline void print_certificate_info(X509* cert) {
+	BIO* bio = BIO_new_fp(stdout, BIO_NOCLOSE);
+	if (!bio) {
+		std::cerr << "Error creating BIO.\n";
+		return;
+	}
+
+	if (X509_print(bio, cert) != 1) {
+		std::cerr << "Error printing certificate information.\n";
+		BIO_free(bio);
+		return;
+	}
+	BIO_free(bio);
+}
+
 class RCA {
 private: 
 	EVP_PKEY* pkey;
@@ -62,26 +77,6 @@ private:
 		std::cout << "RCA: certificate saved\n";
 		if (file) fclose(file);
 	}
-public:
-
-	RCA() {
-		if (!_is_file_exist(pr_key_filename) || !_is_file_exist(pub_key_filename) || !_is_file_exist(cert_filename)) {
-			generate_evp_pkey(2048);
-			generate_self_signed_cert();
-		}
-		else {
-			FILE* pr_key_file = nullptr;
-			fopen_s(&pr_key_file, pr_key_filename, "rb");
-			pkey = PEM_read_PrivateKey(pr_key_file, NULL, NULL, NULL);
-
-			FILE* cert_file = nullptr;
-			fopen_s(&cert_file, cert_filename, "rb");
-			cert = PEM_read_X509(cert_file, NULL, NULL, NULL);
-
-			if(cert_file) fclose(cert_file);
-			if(pr_key_file) fclose(pr_key_file);
-		}
-	}
 
 	void generate_evp_pkey(unsigned int bits) {
 		pkey = EVP_RSA_gen(bits);
@@ -105,25 +100,48 @@ public:
 
 		X509_NAME* name = X509_get_subject_name(cert);
 
-		X509_NAME_add_entry_by_txt(name, "C", MBSTRING_ASC, (unsigned char*) "BY", -1, -1, 0);
-		X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC, (unsigned char*) "BelHard", -1, -1, 0);
-		X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char*) "Root", -1, -1, 0);
+		X509_NAME_add_entry_by_txt(name, "C", MBSTRING_ASC, (unsigned char*)"BY", -1, -1, 0);
+		X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC, (unsigned char*)"BelHard", -1, -1, 0);
+		X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char*)"Root", -1, -1, 0);
 
+		X509_set_subject_name(cert, name);
 		X509_set_issuer_name(cert, name);
 		X509_sign(cert, pkey, EVP_sha256());
 		std::cout << "RCA: cert was made\n";
 		save_cert(cert);
 	}
 
+public:
+
+	RCA() {
+		if (!_is_file_exist(pr_key_filename) || !_is_file_exist(pub_key_filename) || !_is_file_exist(cert_filename)) {
+			generate_evp_pkey(2048);
+			generate_self_signed_cert();
+		}
+		else {
+			FILE* pr_key_file = nullptr;
+			fopen_s(&pr_key_file, pr_key_filename, "rb");
+			pkey = PEM_read_PrivateKey(pr_key_file, NULL, NULL, NULL);
+
+			FILE* cert_file = nullptr;
+			fopen_s(&cert_file, cert_filename, "rb");
+			cert = PEM_read_X509(cert_file, NULL, NULL, NULL);
+
+			if(cert_file) fclose(cert_file);
+			if(pr_key_file) fclose(pr_key_file);
+		}
+		print_certificate_info(cert);
+	}
+
 	X509* sign_cert_req(X509_REQ* cert_req) {
 		if (cert_req == nullptr) {
-			std::cerr << "RCA: x509_req is null";
+			std::cerr << "RCA: x509_req is null\n";
 			return nullptr;
 		}
 
 		X509* signed_cert = X509_new();
 		if (!signed_cert) {
-			std::cerr << "RCA: sign_cert_req error(X509 wasn't created)";
+			std::cerr << "RCA: sign_cert_req error(X509 wasn't created)\n";
 			return nullptr;
 		}
 		
@@ -134,7 +152,7 @@ public:
 
 		EVP_PKEY* req_pkey = X509_REQ_get_pubkey(cert_req);
 		if (req_pkey == nullptr) {
-			std::cerr << "RCA: Error: Unable to get public key from certificate request." << std::endl;
+			std::cerr << "RCA: Error: Unable to get public key from certificate request\n" << std::endl;
 			X509_free(signed_cert);
 			return nullptr;
 		}
@@ -148,13 +166,15 @@ public:
 		X509_set_issuer_name(signed_cert, X509_get_subject_name(cert));
 
 		if (!X509_sign(signed_cert, pkey, EVP_sha256())) {
-			std::cerr << "RCA: Error: Failed to sign the certificate." << std::endl;
+			std::cerr << "RCA: Error: Failed to sign the certificate\n" << std::endl;
 			X509_free(signed_cert);
 			return nullptr;
 		}
 
 		std::cout << "RCA: cert signed successfully\n";
 		X509_NAME_free(name);
+
+		print_certificate_info(signed_cert);
 		return signed_cert;
 	}
 

@@ -43,19 +43,7 @@ private:
 		std::cout << "CA: certificate saved\n";
 		if (file) fclose(file);
 	}
-public: 
-	CA(RCA* _rca) : rca(_rca) {
-		
-	}
-	void generate_evp_pkey(unsigned int bits) {
-		pkey = EVP_RSA_gen(bits);
-		if (!pkey) {
-			std::cerr << "CA: ERV_RSA_gen error\n";
-			_handle_errors();
-		}
-		std::cout << "CA: evp_pkey was made\n";
-		save_evp_pkey(pkey);
-	}
+
 	void generate_rca_signed_cert() {
 		X509_REQ* cert_req = X509_REQ_new();
 
@@ -80,7 +68,7 @@ public:
 
 		X509_NAME_add_entry_by_txt(name, "C", MBSTRING_ASC, (unsigned char*)"BY", -1, -1, 0);
 		X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC, (unsigned char*)"BelHard", -1, -1, 0);
-		X509_NAME_add_entry_by_txt(name, "C", MBSTRING_ASC, (unsigned char*)"CA", -1, -1, 0);
+		X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char*)"CA", -1, -1, 0);
 
 
 		if (!X509_REQ_set_subject_name(cert_req, name)) {
@@ -93,11 +81,11 @@ public:
 
 
 
-		if (!X509_REQ_sign(cert_req, pkey, EVP_sha256())) {
-			std::cerr << "CA: Failed to sign CSR.\n";
-			X509_REQ_free(cert_req);
-			_handle_errors();
-		}
+		//if (!X509_REQ_sign(cert_req, pkey, EVP_sha256())) {
+		//	std::cerr << "CA: Failed to sign CSR.\n";
+		//	X509_REQ_free(cert_req);
+		//	_handle_errors();
+		//}
 		cert = rca->sign_cert_req(cert_req);
 
 		if (!cert) {
@@ -109,8 +97,21 @@ public:
 		std::cout << "CA: certificate generated successfully\n";
 
 		save_cert(cert);
+	}
 
-		X509_REQ_free(cert_req);
+public: 
+	CA(RCA* _rca) : rca(_rca) {
+		generate_evp_pkey(2048);
+		generate_rca_signed_cert();
+	}
+	void generate_evp_pkey(unsigned int bits) {
+		pkey = EVP_RSA_gen(bits);
+		if (!pkey) {
+			std::cerr << "CA: ERV_RSA_gen error\n";
+			_handle_errors();
+		}
+		std::cout << "CA: evp_pkey was made\n";
+		save_evp_pkey(pkey);
 	}
 
 	X509* sign_cert_req(X509_REQ* cert_req) {
@@ -141,8 +142,15 @@ public:
 
 
 		X509_NAME* name = X509_REQ_get_subject_name(cert_req);
+		if (!name) {
+			std::cerr << "Error: X509_REQ_get_subject_name returned null." << std::endl;
+			return nullptr;
+		}
 
-		X509_set_subject_name(signed_cert, name);
+		if (!X509_set_subject_name(signed_cert, name)) {
+			std::cerr << "ERror: can't set subject name into cert\n";
+			return nullptr;
+		}
 		X509_set_issuer_name(signed_cert, X509_get_subject_name(cert));
 
 		if (!X509_sign(signed_cert, pkey, EVP_sha256())) {
@@ -152,6 +160,7 @@ public:
 		}
 
 		std::cout << "CA: cert signed successfully\n";
+		print_certificate_info(signed_cert);
 		return signed_cert;
 	}
 
@@ -161,6 +170,16 @@ public:
 			std::cerr << "CA verify: certificate is NULL\n";
 			return false;
 		}
+		if (X509_verify(x509, X509_get_pubkey(cert)) != 1) {
+			std::cerr << "Certificate signature verification failed.\n";
+			return false;
+		}
+		ASN1_TIME* before = X509_get_notBefore(cert);
+		ASN1_TIME* after = X509_get_notAfter(cert);
+		if (X509_cmp_current_time(before) > 0 || X509_cmp_current_time(after) < 0) {
+			std::cerr << "Certificate has expired or is not yet valid.\n";
+			return false;
+		}
 
 		X509_STORE* store = X509_STORE_new();
 		if (!store) {
@@ -168,12 +187,13 @@ public:
 			return false;
 		}
 
-		if (X509_STORE_add_cert(store, cert) != 1) {
+		if (X509_STORE_add_cert(store, rca->get_RCA_cert()) != 1) {
 			std::cerr << "CA verify: store addition error\n";
 			X509_STORE_free(store);
 			_handle_errors();
 			return false;
 		}
+
 
 		X509_STORE_CTX* ctx = X509_STORE_CTX_new();
 		if (!ctx) {
